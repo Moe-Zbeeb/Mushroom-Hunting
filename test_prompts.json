@@ -1,0 +1,14 @@
+[
+  {
+    "input": "What is 2 + 2?",
+    "output1": "4"
+  },
+  {
+    "input": "What is the capital of France?",
+    "output1": "Paris"
+  },
+  {
+    "input": "Write a one-line Python function to reverse a string.",
+    "output1": "def reverse(s): return s[::-1]"
+  }
+]
