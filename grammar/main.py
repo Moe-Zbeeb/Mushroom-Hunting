@@ -1,5 +1,6 @@
 import os
 import json
+import re
 from transformers import AutoTokenizer
 from vllm import LLM, SamplingParams
 from tqdm import tqdm
@@ -21,7 +22,15 @@ llm = LLM(
     gpu_memory_utilization=0.35,
     enforce_eager=True
 )
-sampling_params = SamplingParams(max_tokens=128, temperature=0)
+
+# Thinking mode sampling params as per docs: Temperature=0.6, TopP=0.95, TopK=20
+sampling_params = SamplingParams(
+    max_tokens=2048,  # More tokens for thinking
+    temperature=0.6,
+    top_p=0.95,
+    top_k=20,
+    min_p=0
+)
 
 def build_prompt(item):
     context = item.get("context", "")
@@ -38,35 +47,37 @@ def build_prompt(item):
 الخيارات:
 {options_text}
 
-أجب برقم الخيار الصحيح فقط (1، 2، 3، أو 4). /no_think"""
+أجب برقم الخيار الصحيح فقط (1، 2، 3، أو 4)."""
 
     return prompt
 
-def extract_answer(response, options):
+def extract_thinking_and_answer(response, options):
     response = response.strip()
 
-    # Remove thinking blocks if present
-    import re
-    response = re.sub(r'<think>.*?</think>', '', response, flags=re.DOTALL)
-    response = response.strip()
+    # Extract thinking content
+    think_match = re.search(r'<think>(.*?)</think>', response, flags=re.DOTALL)
+    thinking_content = think_match.group(1).strip() if think_match else ""
 
-    # Try to find a number (1-4) at the start or as standalone
-    for i, char in enumerate(response[:20]):  # Check first 20 chars
+    # Get the answer part (after </think>)
+    answer_part = re.sub(r'<think>.*?</think>', '', response, flags=re.DOTALL).strip()
+
+    # Try to find a number (1-4)
+    for char in answer_part[:50]:
         if char.isdigit() and 1 <= int(char) <= len(options):
-            return options[int(char) - 1]
+            return thinking_content, options[int(char) - 1], answer_part
 
-    # Check if response contains one of the options
+    # Check if answer contains one of the options
     for opt in options:
-        if opt in response:
-            return opt
+        if opt in answer_part:
+            return thinking_content, opt, answer_part
 
-    return response
+    return thinking_content, answer_part, answer_part
 
 wrong_answers = []
 correct_count = 0
 total = len(data)
 
-print(f"Running benchmark on {total} questions...")
+print(f"Running benchmark on {total} questions with THINKING mode...")
 
 for item in tqdm(data):
     prompt = build_prompt(item)
@@ -75,13 +86,14 @@ for item in tqdm(data):
     formatted_prompt = tok.apply_chat_template(
         messages,
         tokenize=False,
-        add_generation_prompt=True
+        add_generation_prompt=True,
+        enable_thinking=True  # Enable thinking mode
     )
 
     outputs = llm.generate([formatted_prompt], sampling_params)
     response = outputs[0].outputs[0].text.strip()
 
-    predicted = extract_answer(response, item["options"])
+    thinking, predicted, raw_answer = extract_thinking_and_answer(response, item["options"])
     correct = item["answer"]
 
     if predicted == correct:
@@ -94,6 +106,7 @@ for item in tqdm(data):
             "options": item["options"],
             "correct_answer": correct,
             "model_answer": predicted,
+            "thinking_content": thinking,
             "raw_response": response,
             "difficulty": item.get("difficulty", "")
         })
@@ -101,8 +114,8 @@ for item in tqdm(data):
 print(f"\nResults: {correct_count}/{total} correct ({100*correct_count/total:.1f}%)")
 print(f"Wrong answers: {len(wrong_answers)}")
 
-# Save only wrong answers
-with open("qwen3_wrong_answers.json", "w", encoding="utf-8") as f:
+# Save only wrong answers with thinking
+with open("qwen3_wrong_answers_thinking.json", "w", encoding="utf-8") as f:
     json.dump(wrong_answers, f, ensure_ascii=False, indent=2)
 
-print(f"\nWrong answers saved to qwen3_wrong_answers.json")
+print(f"\nWrong answers saved to qwen3_wrong_answers_thinking.json")
